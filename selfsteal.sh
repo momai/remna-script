@@ -3,13 +3,20 @@ set -euo pipefail
 
 # ====== настройки (можно переопределять env-переменными) ======
 BASE_DIR="${BASE_DIR:-/opt/selfsteal}"
+
 DOMAIN="${1:-}"
+MODE="${2:-http}"           # http | cf
+
 SELFS_PORT="${SELFS_PORT:-22253}"
 
 SELFSTEAL_CONTAINER="${SELFSTEAL_CONTAINER:-selfsteal}"
 REMNANODE_CONTAINER="${REMNANODE_CONTAINER:-remnanode}"
 
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"   # опционально, но лучше указать
+
+# Для CF (dns-01)
+CF_CRED_FILE="${CF_CRED_FILE:-/root/.cloudflare.ini}"
+DNS_PROPAGATION_SECONDS="${DNS_PROPAGATION_SECONDS:-20}"
 # ==============================================================
 
 log() { echo -e "[$(date +'%F %T')] $*"; }
@@ -42,6 +49,19 @@ install_deps() {
     fi
   fi
 
+  # Cloudflare plugin только если нужен режим cf
+  if [[ "${MODE}" == "cf" ]]; then
+    if ! python3 -c "import certbot_dns_cloudflare" >/dev/null 2>&1; then
+      log "🔧 Ставлю плагин python3-certbot-dns-cloudflare..."
+      if have_cmd apt-get; then
+        apt-get update -y
+        apt-get install -y python3-certbot-dns-cloudflare
+      else
+        die "Не могу поставить python3-certbot-dns-cloudflare автоматически (не apt). Поставь вручную."
+      fi
+    fi
+  fi
+
   if ! have_cmd docker; then
     die "Docker не найден."
   fi
@@ -61,8 +81,6 @@ compose_up() {
 }
 
 obtain_cert() {
-  check_port_free 80
-
   local email_args=()
   if [[ -n "${CERTBOT_EMAIL}" ]]; then
     email_args=(--email "${CERTBOT_EMAIL}")
@@ -70,14 +88,34 @@ obtain_cert() {
     email_args=(--register-unsafely-without-email)
   fi
 
-  log "📜 Запрашиваю/обновляю сертификат для ${DOMAIN}..."
-  certbot certonly \
-    --standalone \
-    --preferred-challenges http \
-    -d "${DOMAIN}" \
-    --agree-tos \
-    --non-interactive \
-    "${email_args[@]}"
+  case "${MODE}" in
+    http)
+      check_port_free 80
+      log "📜 (http-01/standalone) Запрашиваю/обновляю сертификат для ${DOMAIN}..."
+      certbot certonly \
+        --standalone \
+        --preferred-challenges http \
+        -d "${DOMAIN}" \
+        --agree-tos \
+        --non-interactive \
+        "${email_args[@]}"
+      ;;
+    cf)
+      [[ -f "${CF_CRED_FILE}" ]] || die "Нет файла ${CF_CRED_FILE}. Создай /root/.cloudflare.ini с dns_cloudflare_api_token"
+      log "📜 (dns-01/cloudflare) Запрашиваю/обновляю сертификат для ${DOMAIN}..."
+      certbot certonly \
+        --dns-cloudflare \
+        --dns-cloudflare-credentials "${CF_CRED_FILE}" \
+        --dns-cloudflare-propagation-seconds "${DNS_PROPAGATION_SECONDS}" \
+        -d "${DOMAIN}" \
+        --agree-tos \
+        --non-interactive \
+        "${email_args[@]}"
+      ;;
+    *)
+      die "Неизвестный режим '${MODE}'. Используй: http | cf"
+      ;;
+  esac
 
   log "✅ Сертификат готов: /etc/letsencrypt/live/${DOMAIN}/"
 }
@@ -153,17 +191,17 @@ echo "[hook] \$(date -Is) fired" >> /var/log/letsencrypt/deploy-hook.log
 # reload selfsteal nginx if running; fallback to restart
 if docker ps --format '{{.Names}}' | grep -qx "\${SELFSTEAL_CONTAINER}"; then
   docker exec "\${SELFSTEAL_CONTAINER}" nginx -s reload || docker restart "\${SELFSTEAL_CONTAINER}"
-  echo "[hook] reloaded selfsteal nginx: \${SELFSTEAL_CONTAINER}"
+  echo "[hook] reloaded selfsteal nginx: \${SELFSTEAL_CONTAINER}" >> /var/log/letsencrypt/deploy-hook.log
 else
-  echo "[hook] selfsteal container not running: \${SELFSTEAL_CONTAINER}"
+  echo "[hook] selfsteal container not running: \${SELFSTEAL_CONTAINER}" >> /var/log/letsencrypt/deploy-hook.log
 fi
 
 # restart remnanode so xray (trojan-tls) surely reloads PEM
 if docker ps -a --format '{{.Names}}' | grep -qx "\${REMNANODE_CONTAINER}"; then
   docker restart "\${REMNANODE_CONTAINER}"
-  echo "[hook] restarted remnanode: \${REMNANODE_CONTAINER}"
+  echo "[hook] restarted remnanode: \${REMNANODE_CONTAINER}" >> /var/log/letsencrypt/deploy-hook.log
 else
-  echo "[hook] remnanode container not found: \${REMNANODE_CONTAINER}"
+  echo "[hook] remnanode container not found: \${REMNANODE_CONTAINER}" >> /var/log/letsencrypt/deploy-hook.log
 fi
 EOF
 
@@ -180,6 +218,7 @@ main() {
   fi
   [[ -n "$DOMAIN" ]] || die "Домен пустой."
 
+  log "🧩 MODE=${MODE} (http=standalone, cf=dns-01)"
   obtain_cert
   write_files
 
@@ -194,10 +233,10 @@ main() {
   echo "— Серты: /etc/letsencrypt/live/${DOMAIN}/"
   echo "— Лог хуков: /var/log/letsencrypt/deploy-hook.log"
   echo
-  echo "Проверки:"
-  echo "  1) Хук руками: bash /etc/letsencrypt/renewal-hooks/deploy/remnawave-selfsteal.sh"
-  echo "  2) Реальный тест (редко!): certbot renew --force-renewal"
-  echo "  3) Автообновление: systemctl status certbot.timer"
+  echo "Запуск:"
+  echo "  ./selfsteal.sh ${DOMAIN}            # http (default)"
+  echo "  ./selfsteal.sh ${DOMAIN} http       # http"
+  echo "  ./selfsteal.sh ${DOMAIN} cf         # cloudflare dns-01"
 }
 
 main "$@"
