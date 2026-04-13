@@ -5,7 +5,7 @@ set -euo pipefail
 BASE_DIR="${BASE_DIR:-/opt/selfsteal}"
 
 DOMAIN="${1:-}"
-MODE="${2:-http}"           # http | cf
+MODE="${2:-http}"           # http | cf | dns
 
 SELFS_PORT="${SELFS_PORT:-22253}"
 
@@ -100,6 +100,7 @@ obtain_cert() {
         --non-interactive \
         "${email_args[@]}"
       ;;
+
     cf)
       [[ -f "${CF_CRED_FILE}" ]] || die "Нет файла ${CF_CRED_FILE}. Создай /root/.cloudflare.ini с dns_cloudflare_api_token"
       log "📜 (dns-01/cloudflare) Запрашиваю/обновляю сертификат для ${DOMAIN}..."
@@ -112,8 +113,25 @@ obtain_cert() {
         --non-interactive \
         "${email_args[@]}"
       ;;
+
+    dns)
+      log "📜 (dns-01/manual) Запрашиваю/обновляю сертификат для ${DOMAIN}..."
+      log "⚠️ Сейчас certbot покажет TXT запись для:"
+      log "   _acme-challenge.${DOMAIN}"
+      log "⚠️ Добавь её вручную в DNS, дождись применения, потом нажми Enter."
+      log "⚠️ Этот режим НЕ подходит для полностью автоматического renew."
+
+      certbot certonly \
+        --manual \
+        --preferred-challenges dns \
+        -d "${DOMAIN}" \
+        --agree-tos \
+        --manual-public-ip-logging-ok \
+        "${email_args[@]}"
+      ;;
+
     *)
-      die "Неизвестный режим '${MODE}'. Используй: http | cf"
+      die "Неизвестный режим '${MODE}'. Используй: http | cf | dns"
       ;;
   esac
 
@@ -137,7 +155,6 @@ write_files() {
 </html>
 EOF
 
-  # nginx: без deprecated "listen ... http2"
   cat > "${BASE_DIR}/nginx/default.conf" <<EOF
 server {
     listen ${SELFS_PORT} ssl;
@@ -196,7 +213,7 @@ else
   echo "[hook] selfsteal container not running: \${SELFSTEAL_CONTAINER}" >> /var/log/letsencrypt/deploy-hook.log
 fi
 
-# restart remnanode so xray (trojan-tls) surely reloads PEM
+# restart remnanode so xray surely reloads PEM
 if docker ps -a --format '{{.Names}}' | grep -qx "\${REMNANODE_CONTAINER}"; then
   docker restart "\${REMNANODE_CONTAINER}"
   echo "[hook] restarted remnanode: \${REMNANODE_CONTAINER}" >> /var/log/letsencrypt/deploy-hook.log
@@ -218,7 +235,7 @@ main() {
   fi
   [[ -n "$DOMAIN" ]] || die "Домен пустой."
 
-  log "🧩 MODE=${MODE} (http=standalone, cf=dns-01)"
+  log "🧩 MODE=${MODE} (http=standalone, cf=cloudflare dns-01, dns=manual dns-01)"
   obtain_cert
   write_files
 
@@ -235,8 +252,9 @@ main() {
   echo
   echo "Запуск:"
   echo "  ./selfsteal.sh ${DOMAIN}            # http (default)"
-  echo "  ./selfsteal.sh ${DOMAIN} http       # http"
+  echo "  ./selfsteal.sh ${DOMAIN} http       # http-01 standalone"
   echo "  ./selfsteal.sh ${DOMAIN} cf         # cloudflare dns-01"
+  echo "  ./selfsteal.sh ${DOMAIN} dns        # manual dns-01"
 }
 
 main "$@"
