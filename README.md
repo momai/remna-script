@@ -8,6 +8,10 @@
 
 - [selfsteal.sh](#selfstealsh) — автоматическая настройка selfsteal (TLS-сертификат + nginx)
 - [Мануалы](#мануалы)
+  - [Selfsteal + конфиг Xray для роутинга](docs/selfsteal-xray-routing.md)
+  - [HAProxy TCP-прокси на РФ-ноде](docs/haproxy-tcp-proxy.md)
+  - [WireGuard + sing-box + VLESS Reality](docs/wg-easy-vless.md)
+  - [Hysteria2 через цепочку UDP DNAT](docs/hysteria2-lte-udp-dnat.md)
 - [Команды для проверки и тестирования сервера](#команды-для-проверки-и-тестирования-сервера)
 
 ---
