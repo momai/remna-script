@@ -126,10 +126,9 @@ obtain_cert() {
         --preferred-challenges dns \
         -d "${DOMAIN}" \
         --agree-tos \
-        --manual-public-ip-logging-ok \
+        --keep-until-expiring \
         "${email_args[@]}"
       ;;
-
     *)
       die "Неизвестный режим '${MODE}'. Используй: http | cf | dns"
       ;;
