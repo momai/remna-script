@@ -51,13 +51,11 @@ services:
       - ./wg-easy:/etc/wireguard
     ports:
       - "51820:51820/udp"
-      - "51821:51821/tcp"                   # Web UI
+      - "127.0.0.1:51821:51821/tcp"
+    network_mode: host
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
-    sysctls:
-      - net.ipv4.ip_forward=1
-      - net.ipv4.conf.all.src_valid_mark=1
     restart: unless-stopped
 
   sing-box:
