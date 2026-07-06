@@ -156,6 +156,11 @@ services:
     container_name: ${XHTTP_CONTAINER}
     restart: always
     network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - ${BASE_DIR}/conf.d:/etc/nginx/conf.d:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
