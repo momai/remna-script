@@ -7,6 +7,7 @@
 ## Содержание
 
 - [selfsteal.sh](#selfstealsh) — автоматическая настройка selfsteal (TLS-сертификат + nginx)
+- [selfsteal-xhttp.sh](#selfsteal-xhttpsh) — тоже самое, но нода поднимается через сокет.
 - [Мануалы](#мануалы)
   - [Selfsteal + конфиг Xray для роутинга](docs/selfsteal-xray-routing.md)
   - [HAProxy TCP-прокси на РФ-ноде](docs/haproxy-tcp-proxy.md)
