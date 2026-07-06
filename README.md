@@ -102,6 +102,38 @@ chmod 600 /root/.cloudflare.ini
 
 Подробнее с примером полного конфига → [docs/selfsteal-xray-routing.md](docs/selfsteal-xray-routing.md)
 
+
+## selfsteal-xhttp.sh
+
+Тоже что и selfsteal.sh но нода подключается через сокет.
+
+### Что создаётся
+
+```
+/opt/remnanode/nginx-xhttp
+├── docker-compose.yml
+└── conf.d/
+    ├── default.conf       ← конфиг nginx (HTTPS на SELFS_PORT)
+    └── html/
+        └── index.html     ← заглушка "Just a moment..."
+
+/etc/letsencrypt/renewal-hooks/deploy/remnawave-selfsteal.sh  ← deploy-hook
+```
+
+### Xray settings
+```json
+"tag": "xhttp-direct",
+"listen": "/var/run/xray/xhttp.sock,0666",
+...
+```
+Рядом, на 443 порт вы можете посадить vless
+```
+      "tag": "vless-direct-grpc",
+      "port": 443,
+```
+
+И настроив подключения, вы сможете реализовать схему, где xray принимает запрос на 443 порт, и в зависимости от конфигурации подключения, роутит его либо на vless, либо на xhttp через nginx.
+
 ---
 
 ## Мануалы
