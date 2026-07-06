@@ -107,15 +107,21 @@ chmod 600 /root/.cloudflare.ini
 
 Тоже что и selfsteal.sh но нода подключается через сокет.
 
+### Быстрый старт
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/momai/remna-script/main/selfsteal-xhttp.sh -o selfsteal-xhttp.sh \
+  && chmod +x selfsteal-xhttp.sh \
+  && ./selfsteal-xhttp.sh your.domain.com
+```
+
 ### Что создаётся
 
 ```
 /opt/remnanode/nginx-xhttp
 ├── docker-compose.yml
 └── conf.d/
-    ├── default.conf       ← конфиг nginx (HTTPS на SELFS_PORT)
-    └── html/
-        └── index.html     ← заглушка "Just a moment..."
+    ├── xhttp.conf       ← конфиг nginx (HTTPS на SELFS_PORT)
 
 /etc/letsencrypt/renewal-hooks/deploy/remnawave-selfsteal.sh  ← deploy-hook
 ```
