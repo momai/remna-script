@@ -6,7 +6,7 @@ BASE_DIR="${BASE_DIR:-/opt/remnanode/nginx-xhttp}"
 SOCKETS_DIR="${SOCKETS_DIR:-/opt/remnanode/sockets}"
 
 DOMAIN="${1:-}"
-MODE="${2:-http}"           # http | cf | dns
+MODE="${2:-http}"           # http | cf | hz | dns
 XPATH="${3:-${XPATH:-}}"
 
 SELFS_PORT="${SELFS_PORT:-22253}"
@@ -19,6 +19,9 @@ CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"   # опционально, но лучше �
 # Для CF (dns-01)
 CF_CRED_FILE="${CF_CRED_FILE:-/root/.cloudflare.ini}"
 DNS_PROPAGATION_SECONDS="${DNS_PROPAGATION_SECONDS:-20}"
+
+# Для Hetzner (dns-01)
+HZ_CRED_FILE="${HZ_CRED_FILE:-/root/.hetzner_token}"
 # ==============================================================
 
 log() { echo -e "[$(date +'%F %T')] $*"; }
@@ -60,6 +63,34 @@ install_deps() {
         apt-get install -y python3-certbot-dns-cloudflare
       else
         die "Не могу поставить python3-certbot-dns-cloudflare автоматически (не apt). Поставь вручную."
+      fi
+    fi
+  fi
+
+  # jq & curl для режима hz
+  if [[ "${MODE}" == "hz" ]]; then
+    if ! have_cmd jq; then
+      log "🔧 Ставлю jq..."
+      if have_cmd apt-get; then
+        apt-get update -y
+        apt-get install -y jq
+      elif have_cmd yum; then
+        yum install -y jq
+      elif have_cmd dnf; then
+        dnf install -y jq
+      else
+        die "Не нашёл пакетный менеджер для автоматической установки jq. Поставь jq вручную."
+      fi
+    fi
+    if ! have_cmd curl; then
+      log "🔧 Ставлю curl..."
+      if have_cmd apt-get; then
+        apt-get update -y
+        apt-get install -y curl
+      elif have_cmd yum; then
+        yum install -y curl
+      elif have_cmd dnf; then
+        dnf install -y curl
       fi
     fi
   fi
@@ -116,6 +147,89 @@ obtain_cert() {
         "${email_args[@]}"
       ;;
 
+    hz)
+      [[ -f "${HZ_CRED_FILE}" ]] || die "Нет файла ${HZ_CRED_FILE}. Создай /root/.hetzner_token с вашим API-токеном Hetzner Cloud"
+      log "📜 (dns-01/hetzner) Подготавливаю хуки для ${DOMAIN}..."
+
+      # Создаем скрипты хуков
+      local auth_hook="/etc/letsencrypt/selfsteal-hz-auth.sh"
+      local cleanup_hook="/etc/letsencrypt/selfsteal-hz-cleanup.sh"
+
+      cat > "$auth_hook" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+HZ_API_TOKEN=\$(cat "${HZ_CRED_FILE}" | tr -d '\r\n ' | sed 's/^dns_hetzner_api_token=//' | sed 's/^hetzner_api_token=//')
+CLEAN_DOMAIN="\${CERTBOT_DOMAIN#\*.}"
+domain="\$CLEAN_DOMAIN"
+zone_id=""
+zone_name=""
+while [[ "\$domain" == *.* ]]; do
+  response=\$(curl -s -H "Authorization: Bearer \$HZ_API_TOKEN" "https://api.hetzner.cloud/v1/zones?name=\$domain")
+  zone_id=\$(echo "\$response" | jq -r '.zones[0].id // empty')
+  if [[ -n "\$zone_id" ]]; then
+    zone_name="\$domain"
+    break
+  fi
+  domain="\${domain#*.}"
+done
+if [[ -z "\$zone_id" ]]; then
+  echo "Error: Could not find Hetzner DNS zone for \$CLEAN_DOMAIN" >&2
+  exit 1
+fi
+if [[ "\$CLEAN_DOMAIN" == "\$zone_name" ]]; then
+  record_name="_acme-challenge"
+else
+  relative_part="\${CLEAN_DOMAIN%.\$zone_name}"
+  record_name="_acme-challenge.\$relative_part"
+fi
+payload=\$(jq -n --arg name "\$record_name" --arg val "\"\$CERTBOT_VALIDATION\"" '{name: \$name, type: "TXT", ttl: 60, records: [{value: \$val}]}')
+curl -s -X POST -H "Authorization: Bearer \$HZ_API_TOKEN" -H "Content-Type: application/json" -d "\$payload" "https://api.hetzner.cloud/v1/zones/\$zone_id/rrsets" >/dev/null
+sleep ${DNS_PROPAGATION_SECONDS}
+EOF
+
+      cat > "$cleanup_hook" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+HZ_API_TOKEN=\$(cat "${HZ_CRED_FILE}" | tr -d '\r\n ' | sed 's/^dns_hetzner_api_token=//' | sed 's/^hetzner_api_token=//')
+CLEAN_DOMAIN="\${CERTBOT_DOMAIN#\*.}"
+domain="\$CLEAN_DOMAIN"
+zone_id=""
+zone_name=""
+while [[ "\$domain" == *.* ]]; do
+  response=\$(curl -s -H "Authorization: Bearer \$HZ_API_TOKEN" "https://api.hetzner.cloud/v1/zones?name=\$domain")
+  zone_id=\$(echo "\$response" | jq -r '.zones[0].id // empty')
+  if [[ -n "\$zone_id" ]]; then
+    zone_name="\$domain"
+    break
+  fi
+  domain="\${domain#*.}"
+done
+if [[ -z "\$zone_id" ]]; then
+  exit 0
+fi
+if [[ "\$CLEAN_DOMAIN" == "\$zone_name" ]]; then
+  record_name="_acme-challenge"
+else
+  relative_part="\${CLEAN_DOMAIN%.\$zone_name}"
+  record_name="_acme-challenge.\$relative_part"
+fi
+curl -s -X DELETE -H "Authorization: Bearer \$HZ_API_TOKEN" "https://api.hetzner.cloud/v1/zones/\$zone_id/rrsets/\$record_name/TXT" >/dev/null
+EOF
+
+      chmod +x "$auth_hook" "$cleanup_hook"
+
+      log "📜 (dns-01/hetzner) Запрашиваю/обновляю сертификат для ${DOMAIN}..."
+      certbot certonly \
+        --manual \
+        --preferred-challenges dns \
+        --manual-auth-hook "$auth_hook" \
+        --manual-cleanup-hook "$cleanup_hook" \
+        -d "${DOMAIN}" \
+        --agree-tos \
+        --non-interactive \
+        "${email_args[@]}"
+      ;;
+
     dns)
       log "📜 (dns-01/manual) Запрашиваю/обновляю сертификат для ${DOMAIN}..."
       log "⚠️ Сейчас certbot покажет TXT запись для:"
@@ -132,7 +246,7 @@ obtain_cert() {
         "${email_args[@]}"
       ;;
     *)
-      die "Неизвестный режим '${MODE}'. Используй: http | cf | dns"
+      die "Неизвестный режим '${MODE}'. Используй: http | cf | hz | dns"
       ;;
   esac
 
@@ -249,7 +363,7 @@ main() {
   fi
   normalize_xpath
 
-  log "🧩 MODE=${MODE} (http=standalone, cf=cloudflare dns-01, dns=manual dns-01)"
+  log "🧩 MODE=${MODE} (http=standalone, cf=cloudflare dns-01, hz=hetzner dns-01, dns=manual dns-01)"
   log "🧭 XPATH=${XPATH}"
   obtain_cert
   write_files
@@ -277,6 +391,7 @@ main() {
   echo "  ./selfsteal-xhttp.sh ${DOMAIN}              # http + path prompt/default"
   echo "  ./selfsteal-xhttp.sh ${DOMAIN} http /api/   # http-01 standalone"
   echo "  ./selfsteal-xhttp.sh ${DOMAIN} cf /api/     # cloudflare dns-01"
+  echo "  ./selfsteal-xhttp.sh ${DOMAIN} hz /api/     # hetzner dns-01"
   echo "  ./selfsteal-xhttp.sh ${DOMAIN} dns /api/    # manual dns-01"
 }
 
