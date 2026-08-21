@@ -5,9 +5,13 @@ set -euo pipefail
 BASE_DIR="${BASE_DIR:-/opt/remnanode/nginx-xhttp}"
 SOCKETS_DIR="${SOCKETS_DIR:-/opt/remnanode/sockets}"
 
-DOMAIN="${1:-}"
+DOMAIN_INPUT="${1:-}"
 MODE="${2:-http}"           # http | cf | hz | dns
 XPATH="${3:-${XPATH:-}}"
+EXTRA_DOMAINS="${4:-${EXTRA_DOMAINS:-}}" # comma/space-separated, one certificate per domain
+
+DOMAIN=""                    # first domain: nginx server_name and certificate
+CERT_DOMAINS=()
 
 SELFS_PORT="${SELFS_PORT:-22253}"
 
@@ -114,6 +118,7 @@ compose_up() {
 }
 
 obtain_cert() {
+  local cert_domain="$1"
   local email_args=()
   if [[ -n "${CERTBOT_EMAIL}" ]]; then
     email_args=(--email "${CERTBOT_EMAIL}")
@@ -124,11 +129,11 @@ obtain_cert() {
   case "${MODE}" in
     http)
       check_port_free 80
-      log "📜 (http-01/standalone) Запрашиваю/обновляю сертификат для ${DOMAIN}..."
+      log "📜 (http-01/standalone) Запрашиваю/обновляю отдельный сертификат для ${cert_domain}..."
       certbot certonly \
         --standalone \
         --preferred-challenges http \
-        -d "${DOMAIN}" \
+        -d "${cert_domain}" \
         --agree-tos \
         --non-interactive \
         "${email_args[@]}"
@@ -136,12 +141,12 @@ obtain_cert() {
 
     cf)
       [[ -f "${CF_CRED_FILE}" ]] || die "Нет файла ${CF_CRED_FILE}. Создай /root/.cloudflare.ini с dns_cloudflare_api_token"
-      log "📜 (dns-01/cloudflare) Запрашиваю/обновляю сертификат для ${DOMAIN}..."
+      log "📜 (dns-01/cloudflare) Запрашиваю/обновляю отдельный сертификат для ${cert_domain}..."
       certbot certonly \
         --dns-cloudflare \
         --dns-cloudflare-credentials "${CF_CRED_FILE}" \
         --dns-cloudflare-propagation-seconds "${DNS_PROPAGATION_SECONDS}" \
-        -d "${DOMAIN}" \
+        -d "${cert_domain}" \
         --agree-tos \
         --non-interactive \
         "${email_args[@]}"
@@ -149,7 +154,7 @@ obtain_cert() {
 
     hz)
       [[ -f "${HZ_CRED_FILE}" ]] || die "Нет файла ${HZ_CRED_FILE}. Создай /root/.hetzner_token с вашим API-токеном Hetzner Cloud"
-      log "📜 (dns-01/hetzner) Подготавливаю хуки для ${DOMAIN}..."
+      log "📜 (dns-01/hetzner) Подготавливаю хуки для ${cert_domain}..."
 
       # Создаем скрипты хуков
       local auth_hook="/etc/letsencrypt/selfsteal-hz-auth.sh"
@@ -218,29 +223,29 @@ EOF
 
       chmod +x "$auth_hook" "$cleanup_hook"
 
-      log "📜 (dns-01/hetzner) Запрашиваю/обновляю сертификат для ${DOMAIN}..."
+      log "📜 (dns-01/hetzner) Запрашиваю/обновляю отдельный сертификат для ${cert_domain}..."
       certbot certonly \
         --manual \
         --preferred-challenges dns \
         --manual-auth-hook "$auth_hook" \
         --manual-cleanup-hook "$cleanup_hook" \
-        -d "${DOMAIN}" \
+        -d "${cert_domain}" \
         --agree-tos \
         --non-interactive \
         "${email_args[@]}"
       ;;
 
     dns)
-      log "📜 (dns-01/manual) Запрашиваю/обновляю сертификат для ${DOMAIN}..."
+      log "📜 (dns-01/manual) Запрашиваю/обновляю отдельный сертификат для ${cert_domain}..."
       log "⚠️ Сейчас certbot покажет TXT запись для:"
-      log "   _acme-challenge.${DOMAIN}"
+      log "   _acme-challenge.${cert_domain}"
       log "⚠️ Добавь её вручную в DNS, дождись применения, потом нажми Enter."
       log "⚠️ Этот режим НЕ подходит для полностью автоматического renew."
 
       certbot certonly \
         --manual \
         --preferred-challenges dns \
-        -d "${DOMAIN}" \
+        -d "${cert_domain}" \
         --agree-tos \
         --keep-until-expiring \
         "${email_args[@]}"
@@ -250,7 +255,31 @@ EOF
       ;;
   esac
 
-  log "✅ Сертификат готов: /etc/letsencrypt/live/${DOMAIN}/"
+  log "✅ Сертификат готов: /etc/letsencrypt/live/${cert_domain}/"
+}
+
+parse_domains() {
+  local input="${DOMAIN_INPUT} ${EXTRA_DOMAINS}"
+  local candidate=""
+  local existing=""
+
+  input="${input//,/ }"
+  input="${input//;/ }"
+
+  for candidate in $input; do
+    candidate="${candidate,,}"
+    candidate="${candidate%.}"
+    [[ "$candidate" =~ ^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$ ]] \
+      || die "Некорректный домен: ${candidate}"
+
+    for existing in "${CERT_DOMAINS[@]:-}"; do
+      [[ "$existing" == "$candidate" ]] && continue 2
+    done
+    CERT_DOMAINS+=("$candidate")
+  done
+
+  ((${#CERT_DOMAINS[@]} > 0)) || die "Не указано ни одного домена."
+  DOMAIN="${CERT_DOMAINS[0]}"
 }
 
 normalize_xpath() {
@@ -351,12 +380,15 @@ EOF
 
 main() {
   need_root
-  install_deps
 
-  if [[ -z "$DOMAIN" ]]; then
-    read -r -p "📡 Домен xhttp (пример: de2.getline.pro): " DOMAIN
+  if [[ -z "$DOMAIN_INPUT" ]]; then
+    read -r -p "📡 Домены через пробел или запятую (первый — для xhttp/nginx): " DOMAIN_INPUT
+  else
+    log "ℹ️ Дополнительные домены можно передать 4-м аргументом или через EXTRA_DOMAINS."
   fi
-  [[ -n "$DOMAIN" ]] || die "Домен пустой."
+  parse_domains
+
+  install_deps
 
   if [[ -z "$XPATH" ]]; then
     read -r -p "🧭 Path (default: /api/): " XPATH
@@ -365,7 +397,10 @@ main() {
 
   log "🧩 MODE=${MODE} (http=standalone, cf=cloudflare dns-01, hz=hetzner dns-01, dns=manual dns-01)"
   log "🧭 XPATH=${XPATH}"
-  obtain_cert
+  log "📚 Отдельные сертификаты: ${CERT_DOMAINS[*]}"
+  for cert_domain in "${CERT_DOMAINS[@]}"; do
+    obtain_cert "$cert_domain"
+  done
   write_files
 
   log "🚀 Поднимаю nginx-xhttp (container_name=${XHTTP_CONTAINER})..."
@@ -376,7 +411,11 @@ main() {
   log "🎯 Готово."
   echo "— Папка: ${BASE_DIR}"
   echo "— Контейнер: ${XHTTP_CONTAINER}"
-  echo "— Серты: /etc/letsencrypt/live/${DOMAIN}/"
+  echo "— Домен xhttp/nginx: ${DOMAIN}"
+  echo "— Отдельные сертификаты:"
+  for cert_domain in "${CERT_DOMAINS[@]}"; do
+    echo "    /etc/letsencrypt/live/${cert_domain}/"
+  done
   echo "— Socket dir: ${SOCKETS_DIR}"
   echo "— XHTTP path: ${XPATH}"
   echo "— Лог хуков: /var/log/letsencrypt/deploy-hook.log"
@@ -393,6 +432,8 @@ main() {
   echo "  ./selfsteal-xhttp.sh ${DOMAIN} cf /api/     # cloudflare dns-01"
   echo "  ./selfsteal-xhttp.sh ${DOMAIN} hz /api/     # hetzner dns-01"
   echo "  ./selfsteal-xhttp.sh ${DOMAIN} dns /api/    # manual dns-01"
+  echo "  ./selfsteal-xhttp.sh ${DOMAIN} cf /api/ extra.example.com"
+  echo "  ./selfsteal-xhttp.sh '${DOMAIN},extra.example.com' cf /api/"
 }
 
 main "$@"

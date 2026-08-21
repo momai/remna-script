@@ -116,6 +116,28 @@ curl -fsSL https://raw.githubusercontent.com/momai/remna-script/main/selfsteal-x
   && ./selfsteal-xhttp.sh your.domain.com
 ```
 
+Можно сразу выпустить несколько **отдельных** сертификатов. Первый домен используется
+в конфиге nginx-xhttp, остальные сертификаты можно указать в других inbound'ах Xray:
+
+```bash
+./selfsteal-xhttp.sh 'ru-part1.l-vps-app.win,ru.l-vps-app.win' cf /api/
+```
+
+То же самое с отдельным четвёртым аргументом:
+
+```bash
+./selfsteal-xhttp.sh ru-part1.l-vps-app.win hz /api/ ru.l-vps-app.win
+```
+
+Поддерживаются режимы `http`, `cf` (Cloudflare DNS), `hz` (Hetzner DNS) и `dns`
+(ручной DNS). Без первого аргумента скрипт предложит ввести все домены через пробел
+или запятую. Сертификаты будут лежать отдельно:
+
+```text
+/etc/letsencrypt/live/ru-part1.l-vps-app.win/
+/etc/letsencrypt/live/ru.l-vps-app.win/
+```
+
 ### Что создаётся
 
 ```
